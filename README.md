@@ -4,6 +4,16 @@ A C++17 in-process key-value lookup module with partitioned snapshots and online
 
 The engine provides four table backends, a chunk allocator, epoch-based reclamation, and sequential N+1 refresh. It does not fetch missing records from a remote database or implement a network server.
 
+## Demo on NCShare
+
+[![NCShare terminal demo](assets/demo/ncshare-demo.gif)](assets/demo/ncshare-demo.mp4?raw=1)
+
+[Download the full-resolution MP4](assets/demo/ncshare-demo.mp4?raw=1).
+
+A scripted terminal session captured in a real NCShare Slurm allocation using 4 CPU cores and no GPU. The executable was compiled on the cluster before recording. The clip shows snapshot construction, a lookup hit, a lookup miss, and the before/after results of N+1 refresh with the `neighbor-pool` backend and 8 partitions.
+
+The input consists of real [MovieLens-1M](https://grouplens.org/datasets/movielens/1m/) rating events: 800,168 records in the old snapshot and 1,000,209 in the new snapshot. Keys are chronological event IDs; original movie and rating fields are retained in the values. The newly added key `800168` is absent before refresh and available afterward.
+
 ## Build
 
 Requires a C++17 compiler, CMake 3.20 or later, and a POSIX environment. Linux and macOS are supported. Public dependencies are downloaded during configuration: Abseil, Protobuf, and FlatBuffers. CMake 3.31.6 is used by the Linux build workflow.
