@@ -65,7 +65,7 @@ sequenceDiagram
 
 For a stable table of size **M**, split into **N similarly sized partitions**, the ideal live-table model is **M + M/N**. With 8 equal partitions, that is about **1.125 × M**, before temporary buffers, strings, metadata, and allocator retention. This is a model of live table storage; measured process RSS includes additional costs.
 
-The waiting step is essential: a slow reader can delay reclamation and therefore the next partition's refresh.
+A slow reader can delay reclamation and therefore the next partition's refresh. On MovieLens-1M, both serial builders reached about 487 MiB of process RSS. Building the entire replacement in parallel raised the peak to 656 MiB. [See the refresh comparison](#refresh-peak-memory-and-time).
 
 ## Four ways to store the same records
 
@@ -82,7 +82,29 @@ Compare layouts **within a row pair**: `bucket` ↔ `neighbor`, or `bucket-pool`
 
 ## Measured results
 
-### First, check that refresh preserves the records
+### Refresh peak memory and time
+
+**With one partition builder in each strategy, N+1 showed no consistent peak RSS saving over whole-table double buffering.** Its median peak was **0.86 MiB higher** and its median refresh took **45.7 ms longer**. Against a whole-table double buffer that built all eight partitions in parallel, N+1 used **168.87 MiB less peak RSS (25.7%)** and took **420.0 ms longer (2.21× the refresh time)**.
+
+| Refresh strategy | When readers can see new data | Peak process RSS, MiB | Refresh time, ms |
+|---|---|---:|---:|
+| N+1, serial build | Each partition as it is ready | **487.37** (486.42–489.70) | **766.8** (706.0–831.1) |
+| Whole-table double buffer, serial build | One swap after all eight are ready | **486.51** (485.81–488.58) | **721.1** (710.7–837.4) |
+| Whole-table double buffer, parallel build | One swap after all eight are ready | **656.24** (655.95–656.30) | **346.8** (341.2–350.3) |
+
+Each cell gives the median of six runs, with the minimum and maximum in parentheses. Both serial strategies loaded one new partition at a time. N+1 reclaimed the corresponding old partition before proceeding. The serial double buffer kept the entire old generation through the final swap. N+1 bounds the number of live partitions, but freed memory can remain resident in the process. The parallel comparison also changes the number of concurrent builders, so the 25.7% difference cannot be attributed to earlier reclamation alone.
+
+<details>
+<summary><strong>How the comparison was measured</strong></summary>
+
+- **Inputs and workload.** All runs used the same two MovieLens-1M snapshots (800,168 → 1,000,209 real rating events), eight partitions and the `neighbor-pool` backend. Four reader threads queried existing keys under epoch protection, each targeting one lookup per millisecond.
+- **Run order and hardware.** One NCShare Slurm allocation on an Intel Xeon Platinum 8568Y+ host, eight CPUs and 16 GiB of RAM, CPU only. Six blocks covered all six possible orders of the three strategies. Each invocation started in a fresh process and loaded the old table the same way. [Runtime revision](https://github.com/Zhang-Xin-Duke/online-index-engine-public/tree/e28bc8fba91652807a476df44a622fe61d3b43a1).
+- **Measurement window.** After loading the old table and warming the readers, the harness reset the Linux process RSS high-water mark. Starting RSS was about 222 MiB in all three modes. Peak is the process `VmHWM` read after refresh. Wall time runs from the start of loading the replacement through publication, waiting for readers, and reclaiming the old data. Snapshot construction and the subsequent full-record check are outside the window.
+- **Correctness.** Across 18 runs, concurrent readers reported zero invalid IDs or generations. After each refresh, every one of the 1,000,209 records matched the new input by ID, generation and value.
+
+</details>
+
+### Does refresh preserve the records?
 
 The public runtime was validated locally against every record in two real snapshots, with four reader threads active during refresh.
 
@@ -123,7 +145,7 @@ The useful decision is workload-dependent: how much lookup latency matters relat
 - **Matrix:** 4/8/16 partitions × 4 backends × 3 runs = 36 completed runs. Every run checked all 1,000,209 new records, with zero errors.
 - **Lookup:** old-snapshot keys shuffled with a fixed seed; 100% hits; one warm-up pass and five timed passes. Timing includes hashing, partition selection, lookup, validation and checksum accumulation. One epoch handle covers the timed batch; there is no network/RPC timing.
 - **Refresh:** sequential N+1 refresh with four concurrent reader threads. The table construction threshold is `0.9`; power-of-two capacity rounding determines actual occupancy.
-- **Memory:** process RSS high-water mark read after refresh, including earlier peaks and allocator retention. The matrix has no whole-table double-buffer baseline, so it does not quantify N+1 memory savings against that baseline.
+- **Memory:** this backend matrix records the process high-water mark including initial loading. The [refresh strategy comparison](#refresh-peak-memory-and-time) above resets the high-water mark after initial loading to isolate the refresh window.
 - **Interpretation:** three repetitions provide a reference comparison on shared hardware. The run does not establish a production SLA or tail latency. Cross-pair comparisons do not isolate allocator effects.
 
 </details>
