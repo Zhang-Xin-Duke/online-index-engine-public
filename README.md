@@ -104,6 +104,25 @@ Each cell gives the median of six runs, with the minimum and maximum in parenthe
 
 </details>
 
+### Where did the reclaimed memory go?
+
+The initial load built the eight old partitions on worker threads. Their records landed in eight glibc allocation arenas. During refresh, the serial writer built the replacements mostly on the main heap. Freeing an old partition increased the free space in its worker arena, while the pages stayed resident and the writer's heap continued to grow.
+
+We traced the same snapshots on NCShare with glibc 2.35. The following are medians of three fresh processes per configuration. “Live table” counts compact buckets, record-pool chunks and heap-backed record strings. RSS is current process residency from Linux `smaps_rollup`. Values are in MiB.
+
+| Default N+1 refresh | Live table | RSS | Free space in the eight worker arenas |
+|---|---:|---:|---:|
+| Old table serving | 171.7 | 221.8 | 39.3 |
+| Partition 0 loaded, old copy still live | 199.9 | 281.0 | 39.3 |
+| Partition 0 reclaimed | 178.5 | 281.0 | 61.5 |
+| Partition 7 loaded, last old copy still live | 247.3 | 492.4 | 194.2 |
+| Partition 7 reclaimed | 225.9 | 492.4 | 216.3 |
+| Same process after a diagnostic `malloc_trim(0)` | 225.9 | 316.2 | 216.3 |
+
+At the last load, the serial whole-table double buffer still owned **397.5 MiB** of table components, compared with **247.3 MiB** for N+1. Yet both processes occupied about **492 MiB**. In N+1, the mappings containing the old shards' sampled strings stayed at **216.4 MiB RSS** throughout the refresh. Trimming brought those mappings down to **73.6 MiB** without changing the live table. glibc can retain an address range as free space even after returning its physical pages to Linux.
+
+Two diagnostic controls tested that explanation. Trimming after **each** reclamation took the N+1 refresh peak from **492.5 to 368.0 MiB**. Giving both strategies a single allocation arena (`MALLOC_ARENA_MAX=1`) yielded peak RSS of **354.1 MiB for N+1** and **465.1 MiB for the serial double buffer**. These are instrumented runs. Use the preceding uninstrumented comparison for refresh latency. All 15 diagnostic runs passed the concurrent-reader checks and full new-snapshot validation.
+
 ### Does refresh preserve the records?
 
 The public runtime was validated locally against every record in two real snapshots, with four reader threads active during refresh.
